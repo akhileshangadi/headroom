@@ -2411,11 +2411,14 @@ class AnthropicHandlerMixin:
             # (``anthropic_backend``) and Vertex/gateway providers gate tool search
             # differently, so scope the injection to provider "anthropic" over the
             # direct API and leave those paths untouched.
-            # Fix #2526: also gate on the upstream URL — if ANTHROPIC_TARGET_API_URL
-            # points at a gateway/LiteLLM proxy (not api.anthropic.com), tool_search
-            # injection sends Anthropic-specific tool schemas to a third-party upstream
-            # that rejects them with 400 "Some tools are not available".
-            _upstream_url = os.environ.get("ANTHROPIC_TARGET_API_URL", "")
+            # Fix #2526: gate on the upstream URL — if it points at a gateway/LiteLLM
+            # proxy (not api.anthropic.com), tool_search schemas cause 400s.
+            # Fix #2526 (corrected): also read from self.config to cover the --anthropic-api-url
+            # CLI flag path, which writes to ProxyConfig but not back to os.environ.
+            _upstream_url = (
+                (getattr(getattr(self, "config", None), "anthropic_api_url", None) or "")
+                or os.environ.get("ANTHROPIC_TARGET_API_URL", "")
+            )
             _is_native_anthropic = not _upstream_url or "api.anthropic.com" in _upstream_url
             if (
                 provider_name == "anthropic"

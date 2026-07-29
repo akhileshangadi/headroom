@@ -2306,6 +2306,7 @@ def apply_session_sticky_ccr_tool(
     request_id: str | None,
     existing_tools: list[dict[str, Any]] | None,
     has_compressed_content_this_turn: bool,
+    request_body: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Apply sticky-on CCR retrieval-tool injection per :class:`SessionCcrTracker`.
 
@@ -2355,14 +2356,26 @@ def apply_session_sticky_ccr_tool(
         return tools_out, False
 
     # No session_id (e.g. WS path): per-turn decision drives directly.
-    # Fix #2440: also inject when history already contains a headroom_retrieve
-    # tool_use (prior CCR markers present) even if this turn has no new compression —
-    # otherwise Anthropic 400s with "Tool reference headroom_retrieve not found".
+    # Fix #2440 (corrected): scan the request body's messages array for prior
+    # headroom_retrieve tool_use blocks — NOT existing_tools (which is the outgoing
+    # tool-definitions array that Claude Code never includes headroom_retrieve in).
+    # When session_id is None and prior CCR markers are in message history,
+    # re-inject the tool so Anthropic doesn't 400 with "Tool reference not found".
     if not session_id:
-        history_has_ccr_marker = any(
-            isinstance(t, dict) and t.get("name") == CCR_TOOL_NAME
-            for t in (existing_tools or [])
-        )
+        history_has_ccr_marker = False
+        if request_body:
+            messages = request_body.get("messages") or []
+            history_has_ccr_marker = any(
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == CCR_TOOL_NAME
+                for msg in messages
+                for block in (
+                    msg.get("content", [])
+                    if isinstance(msg.get("content"), list)
+                    else []
+                )
+            )
         if not has_compressed_content_this_turn and not history_has_ccr_marker:
             log_tool_injection_decision(
                 provider=provider,
@@ -2875,7 +2888,6 @@ _TOOL_SEARCH_CORE_TOOLS = frozenset(
         "taskcreate",
         "taskupdate",
         "tasklist",
-        "webfetch",
         "monitor",
         "sendmessage",
         "endconversation",
