@@ -269,3 +269,9 @@ uv.lock
 .tokensave
 
 .codebase-memory/
+
+# Local machine-specific must never be committed
+local-setup
+
+# Local Claude Code settings (machine-specific)
+.claude/
