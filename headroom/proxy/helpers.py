@@ -2355,8 +2355,15 @@ def apply_session_sticky_ccr_tool(
         return tools_out, False
 
     # No session_id (e.g. WS path): per-turn decision drives directly.
+    # Fix #2440: also inject when history already contains a headroom_retrieve
+    # tool_use (prior CCR markers present) even if this turn has no new compression —
+    # otherwise Anthropic 400s with "Tool reference headroom_retrieve not found".
     if not session_id:
-        if not has_compressed_content_this_turn:
+        history_has_ccr_marker = any(
+            isinstance(t, dict) and t.get("name") == CCR_TOOL_NAME
+            for t in (existing_tools or [])
+        )
+        if not has_compressed_content_this_turn and not history_has_ccr_marker:
             log_tool_injection_decision(
                 provider=provider,
                 session_id=None,
@@ -2370,7 +2377,7 @@ def apply_session_sticky_ccr_tool(
         log_tool_injection_decision(
             provider=provider,
             session_id=None,
-            decision="inject_first_time",
+            decision="inject_first_time" if has_compressed_content_this_turn else "inject_sticky_no_session",
             tool_definition_bytes_count=len(replay.canonical_bytes),
             request_id=request_id,
         )
@@ -2839,6 +2846,7 @@ def reset_tool_search_hint_state() -> None:
 # more) most frequent tools resident.
 _TOOL_SEARCH_CORE_TOOLS = frozenset(
     {
+        # lowercase — matched case-insensitively below (fixes #2646: Claude Code sends PascalCase)
         "bash",
         "bash_background",
         "bash_background_output",
@@ -2857,6 +2865,20 @@ _TOOL_SEARCH_CORE_TOOLS = frozenset(
         "webfetch",
         "question",
         "skill",
+        # Claude Code internal tools that must never be deferred
+        "toolsearch",
+        "websearch",
+        "enterdebugmode",
+        "exitdebugmode",
+        "enterplanmode",
+        "exitplanmode",
+        "taskcreate",
+        "taskupdate",
+        "tasklist",
+        "webfetch",
+        "monitor",
+        "sendmessage",
+        "endconversation",
     }
 )
 _TOOL_SEARCH_DEFAULT_TYPE = "tool_search_tool_regex_20251119"
@@ -2901,7 +2923,10 @@ def inject_tool_search_deferral(
     resident_has_cache_control = False
 
     for tool in tools:
-        if not isinstance(tool, dict) or tool.get("type") or tool.get("name") in core_tools:
+        tool_name = tool.get("name") if isinstance(tool, dict) else None
+        # Fix #2646: Claude Code sends PascalCase names; compare case-insensitively
+        is_core = tool_name is not None and tool_name.lower() in core_tools
+        if not isinstance(tool, dict) or tool.get("type") or is_core:
             # Non-dict, server/typed tools (web_search, computer, …), and core
             # tools stay resident and unchanged.
             out.append(tool)
@@ -3019,10 +3044,12 @@ def inject_tool_search_deferral_openai(
         # Deferrable: a non-core function, or an MCP server (OpenAI models are
         # trained to search namespaces / MCP servers). Everything else — core
         # coding tools and other hosted tools — stays resident.
+        # Fix #2646: compare case-insensitively — Claude Code sends PascalCase names
+        tool_name = tool.get("name")
         deferrable = (
             ttype == "function"
-            and tool.get("name") not in core_tools
-            and tool.get("name") not in _OPENAI_TOOL_SEARCH_RESIDENT_NAMES
+            and (tool_name is None or tool_name.lower() not in core_tools)
+            and (tool_name is None or tool_name.lower() not in {n.lower() for n in _OPENAI_TOOL_SEARCH_RESIDENT_NAMES})
         ) or ttype == "mcp"
         if deferrable and not tool.get("defer_loading"):
             new_tool = dict(tool)
